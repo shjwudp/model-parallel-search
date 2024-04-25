@@ -1,0 +1,19 @@
+model:
+  name: "Mixtral 8x22b"
+  global_batch_size: 1024
+  micro_batch_size: 1
+  vocab_size: 32000
+  num_layers: 56
+  hidden_size: 6144
+  ffn_hidden_size: 16384
+  seq_length: 65536
+  activation: "swiglu"
+  moe:
+    expert_frequency: 1.
+    k: 2
+    num_experts: 8
+    token_imbalance_hypothesis: 2.0
+trainer:
+  data_parallel_sharding_strategy: "OPTIMIZER_STATES"
+  param_dtype: "float16"
+  grad_dtype: "float32"
