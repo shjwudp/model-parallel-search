@@ -74,7 +74,7 @@ def Memory_estimation(
     model_config,
     trainer_config,
     parallel_config: ParallelConfig,
-    token_imbalance_hypothesis=2.0,
+    token_imbalance_hypothesis=1.0,
 ) -> MemoryEstimation:
     """Estimate memory usage for a given model and parallel configuration."""
     # Parallel configuration
@@ -121,7 +121,7 @@ def Memory_estimation(
     c = token_imbalance_factor  # expert capacity factor
 
     # Memory usage for model & optimizer states
-    embedding_parameters = v * h // tp * 2
+    embedding_parameters = v * h // tp * (2 if pp == 1 else 1)
     attention_layer_parameters = h * h * 4 // tp
     if activation == "swiglu":
         mlp_layer_parameters = h * h_ffn * 3 // tp
@@ -147,7 +147,7 @@ def Memory_estimation(
     )
 
     # Memory usage for activations
-    embedding_activation = 4 * s * b * v // tp
+    cross_entropy_activation = 4 * s * b * v // tp
     if activation == "swiglu":
         # SwiGLU MLP
         mlp_activation = 2 * s * b * (h + 4 * h_ffn) / tp
@@ -162,7 +162,7 @@ def Memory_estimation(
     practice_expert_layers_activations = nlayers * f_expert * practice_moe_activation
     non_expert_layers_activations = (
         nlayers * ((1.0 - f_expert) * mlp_activation + 2 * 7 * s * b * h / tp)
-        + embedding_activation
+        + cross_entropy_activation
     )
     activations_memory = expert_layers_activations + non_expert_layers_activations
     practice_activations_memory = (
@@ -170,7 +170,7 @@ def Memory_estimation(
     )
 
     # Cross entropy temporary memory
-    cross_entropy_loss_temp_memory = 4 * s * b * v // tp * 1.5 if tp > 1 else 1.0
+    cross_entropy_loss_temp_memory = 2 * s * b * v // tp if tp > 1 and pp == 1 else 0.0
 
     # Pipeline parallelism bubble ratio
     pipeline_parallelism_buble_rate = (pp - 1) / m
