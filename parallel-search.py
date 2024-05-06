@@ -162,7 +162,7 @@ def Memory_estimation(
     practice_expert_layers_activations = nlayers * f_expert * practice_moe_activation
     non_expert_layers_activations = (
         nlayers * ((1.0 - f_expert) * mlp_activation + 2 * 7 * s * b * h / tp)
-        + cross_entropy_activation
+        + (cross_entropy_activation if pp == 1 else 0.0)
     )
     activations_memory = expert_layers_activations + non_expert_layers_activations
     practice_activations_memory = (
@@ -170,7 +170,7 @@ def Memory_estimation(
     )
 
     # Cross entropy temporary memory
-    cross_entropy_loss_temp_memory = 2 * s * b * v // tp if tp > 1 and pp == 1 else 0.0
+    cross_entropy_loss_temp_memory = 2 * s * b * v // tp if tp > 1 else 0.0
 
     # Pipeline parallelism bubble ratio
     pipeline_parallelism_buble_rate = (pp - 1) / m
@@ -191,7 +191,7 @@ def Memory_estimation(
         total_memory_gb=(
             model_and_optimizer_states_memory
             + activations_memory
-            + cross_entropy_loss_temp_memory
+            + (cross_entropy_loss_temp_memory if pp == 1 else 0.0)
         )
         / 1024 ** 3,
         model_and_optimizer_states_memory_gb=model_and_optimizer_states_memory
