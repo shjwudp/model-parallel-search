@@ -3,7 +3,7 @@ from collections import namedtuple
 from itertools import product
 
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 ParallelConfig = namedtuple("ParallelConfig", ["ngpus", "tp", "pp", "ep", "cp", "dp"])
 MemoryEstimation = namedtuple(
@@ -24,7 +24,7 @@ MemoryEstimation = namedtuple(
         "total_memory_gb",
         "model_and_optimizer_states_memory_gb",
         "activations_memory_gb",
-        "cross_entropy_loss_temp_memory_gb",
+        "cross_entropy_activation_memory_gb",
         "practice_activations_memory_gb",
         "expert_parameters_m",
         "non_expert_parameters_m",
@@ -89,6 +89,7 @@ def Memory_estimation(
     ), "Parallelism configuration does not match the number of GPUs."
     assert dp % ep == 0, "Data parallelism must be divisible by expert parallelism."
     data_module_expert_parallelism = dp // ep
+    share_embeddings_and_output_weights = model_config.get("share_embeddings_and_output_weights", True)
 
     # Model parameters
     v = model_config.vocab_size
@@ -121,7 +122,7 @@ def Memory_estimation(
     c = token_imbalance_factor  # expert capacity factor
 
     # Memory usage for model & optimizer states
-    embedding_parameters = v * h // tp * (2 if pp == 1 else 1)
+    embedding_parameters = v * h // tp * (2 if pp == 1 and not share_embeddings_and_output_weights else 1)
     attention_layer_parameters = h * h * 4 // tp
     if activation == "swiglu":
         mlp_layer_parameters = h * h_ffn * 3 // tp
@@ -147,10 +148,11 @@ def Memory_estimation(
     )
 
     # Memory usage for activations
-    cross_entropy_activation = 4 * s * b * v // tp
+    nbytes_per_element = 4 if trainer_config.param_dtype == "float32" else 2
+    cross_entropy_activation = (2 + 4 + 4) * s * b * v // tp
     if activation == "swiglu":
         # SwiGLU MLP
-        mlp_activation = 2 * s * b * (h + 4 * h_ffn) / tp
+        mlp_activation = 2 * s * b * (h + 3 * h_ffn) / tp
     else:
         # Vanilla MLP
         mlp_activation = 2 * s * b * (h + 2 * h_ffn) / tp
@@ -168,9 +170,6 @@ def Memory_estimation(
     practice_activations_memory = (
         practice_expert_layers_activations + non_expert_layers_activations
     )
-
-    # Cross entropy temporary memory
-    cross_entropy_loss_temp_memory = 2 * s * b * v // tp if tp > 1 else 0.0
 
     # Pipeline parallelism bubble ratio
     pipeline_parallelism_buble_rate = (pp - 1) / m
@@ -191,13 +190,12 @@ def Memory_estimation(
         total_memory_gb=(
             model_and_optimizer_states_memory
             + activations_memory
-            + (cross_entropy_loss_temp_memory if pp == 1 else 0.0)
         )
         / 1024 ** 3,
         model_and_optimizer_states_memory_gb=model_and_optimizer_states_memory
         / 1024 ** 3,
         activations_memory_gb=activations_memory / 1024 ** 3,
-        cross_entropy_loss_temp_memory_gb=cross_entropy_loss_temp_memory / 1024 ** 3,
+        cross_entropy_activation_memory_gb=cross_entropy_activation / 1024 ** 3,
         practice_activations_memory_gb=practice_activations_memory / 1024 ** 3,
         expert_parameters_m=expert_parameters / 1024 ** 2,
         non_expert_parameters_m=non_expert_parameters / 1024 ** 2,
@@ -252,6 +250,44 @@ def print_memory_estimation(memory_estimation: MemoryEstimation):
     print(f"Token Imbalance Hypothesis: {memory_estimation.token_imbalance_hypothesis}")
 
 
+def get_model_parallel_search_space(cfg):
+    # Default parallelism configuration
+    num_experts = cfg.model.moe.num_experts
+    mbs_range = [1, 2, 4]
+    cp_range = [1, 2, 4, 8]
+    ep_range = [2 ** i for i in range(int(num_experts).bit_length())]
+    if num_experts == 0:
+        ep_range = [1]
+    tp_range = [1, 2, 4, 8]
+    pp_range = [1, 2, 4, 8]
+    ngpus_range = [8, 64, 128, 512, 1024, 10240, 16384]
+    shard_strategys = ["OPTIMIZER_STATES", "OPTIMIZER_STATES_AND_GRADS", "FULLY_SHARD"]
+
+    # Load parallelism configuration from configuration file
+    if "mbs_range" in cfg:
+        mbs_range = cfg.mbs_range
+    if "cp_range" in cfg:
+        cp_range = cfg.cp_range
+    if "ep_range" in cfg:
+        ep_range = cfg.ep_range
+    if "tp_range" in cfg:
+        tp_range = cfg.tp_range
+    if "pp_range" in cfg:
+        pp_range = cfg.pp_range
+    if "ngpus_range" in cfg:
+        ngpus_range = cfg.ngpus_range
+
+    return {
+        "mbs_range": mbs_range,
+        "cp_range": cp_range,
+        "ep_range": ep_range,
+        "tp_range": tp_range,
+        "pp_range": pp_range,
+        "ngpus_range": ngpus_range,
+        "shard_strategys": shard_strategys,
+    }
+
+
 @hydra.main(
     version_base="1.1", config_path="./", config_name="Mixtral_8x7b.yaml",
 )
@@ -260,19 +296,24 @@ def main(cfg: DictConfig):
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow(MemoryEstimation._fields)
 
-    # Parallelism configuration
-    num_experts = cfg.model.moe.num_experts
-    mbs_range = [1, 2]
-    cp_range = [1, 2, 4, 8]
-    ep_range = [2 ** i for i in range(int(num_experts).bit_length())]
-    tp_range = [1, 2, 4, 8]
-    pp_range = [1, 2, 4, 8]
-    ngpus_range = [64, 128, 512, 1024, 10240, 16384]
-    shard_strategys = ["OPTIMIZER_STATES", "OPTIMIZER_STATES_AND_GRADS", "FULLY_SHARD"]
+    if not hasattr(cfg.model, "moe"):
+        with open_dict(cfg.model):
+            cfg.model.moe = DictConfig({
+                "expert_frequency": 0,
+                "k": 0,
+                "num_experts": 0,
+                "token_imbalance_hypothesis": 1.0,
+            })
 
-    if "ngpus_range" in cfg:
-        ngpus_range = cfg.ngpus_range
-
+    # Model parallelism search space
+    mp_space = get_model_parallel_search_space(cfg)
+    mbs_range = mp_space["mbs_range"]
+    cp_range = mp_space["cp_range"]
+    ep_range = mp_space["ep_range"]
+    tp_range = mp_space["tp_range"]
+    pp_range = mp_space["pp_range"]
+    ngpus_range = mp_space["ngpus_range"]
+    shard_strategys = mp_space["shard_strategys"]
     for ngpus, tp, pp, ep, cp, dp_sharding_strategy, mbs in product(
         ngpus_range, tp_range, pp_range, ep_range, cp_range, shard_strategys, mbs_range
     ):
@@ -286,6 +327,9 @@ def main(cfg: DictConfig):
             continue
         if cfg.model.global_batch_size % (dp * mbs) != 0:
             # Global batch size must be divisible by data parallelism and micro batch size.
+            continue
+        if cfg.model.num_layers % pp != 0:
+            # Number of layers must be divisible by pipeline parallelism.
             continue
 
         # Update model configuration
