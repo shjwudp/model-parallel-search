@@ -259,8 +259,8 @@ def get_model_parallel_search_space(cfg):
     if num_experts == 0:
         ep_range = [1]
     tp_range = [1, 2, 4, 8]
-    pp_range = [1, 2, 4, 8]
-    ngpus_range = [8, 64, 128, 512, 1024, 10240, 16384]
+    pp_range = [1, 2, 4, 8, 16]
+    ngpus_range = [8, 16, 32, 64, 128, 256, 512, 1024, 10240]
     shard_strategys = ["OPTIMIZER_STATES", "OPTIMIZER_STATES_AND_GRADS", "FULLY_SHARD"]
 
     # Load parallelism configuration from configuration file
@@ -346,6 +346,8 @@ def main(cfg: DictConfig):
             token_imbalance_hypothesis=cfg.model.moe.token_imbalance_hypothesis,
         )
         csv_writer.writerow(memory_estimation)
+
+    csv_file.flush()
 
 
 if __name__ == "__main__":
