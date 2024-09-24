@@ -123,7 +123,14 @@ def Memory_estimation(
 
     # Memory usage for model & optimizer states
     embedding_parameters = v * h // tp * (2 if pp == 1 and not share_embeddings_and_output_weights else 1)
-    attention_layer_parameters = h * h * 4 // tp
+    if hasattr(model_config, "num_key_value_heads"):
+        # Grouped Query Attention (GQA) configuration
+        d_head = model_config.hidden_size // model_config.num_attention_heads
+        n_kv_heads = model_config.num_key_value_heads
+        n_q_heads = model_config.num_attention_heads
+        attention_layer_parameters = h // tp * (n_q_heads * d_head + 2 * n_kv_heads * d_head + h)
+    else:
+        attention_layer_parameters = h * h * 4 // tp
     if activation == "swiglu":
         mlp_layer_parameters = h * h_ffn * 3 // tp
     else:
@@ -260,8 +267,8 @@ def get_model_parallel_search_space(cfg):
         ep_range = [1]
     tp_range = [1, 2, 4, 8]
     pp_range = [1, 2, 4, 8, 16]
-    ngpus_range = [8, 16, 32, 64, 128, 256, 512, 1024, 10240]
-    shard_strategys = ["OPTIMIZER_STATES", "OPTIMIZER_STATES_AND_GRADS", "FULLY_SHARD"]
+    ngpus_range = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 10240]
+    shard_strategys = ["NO_OP", "OPTIMIZER_STATES", "OPTIMIZER_STATES_AND_GRADS", "FULLY_SHARD"]
 
     # Load parallelism configuration from configuration file
     if "mbs_range" in cfg:

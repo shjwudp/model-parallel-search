@@ -1,8 +1,8 @@
 model:
-  name: "Mixtral 8x7b"
-  global_batch_size: 1024
+  name: "LLaMA-3.1 8B"
+  global_batch_size: 4096
   micro_batch_size: 1
-  vocab_size: 32000
+  vocab_size: 128256
   num_layers: 32
   hidden_size: 4096
   num_attention_heads: 32
@@ -10,11 +10,7 @@ model:
   ffn_hidden_size: 14336
   seq_length: 8192
   activation: "swiglu"
-  moe:
-    expert_frequency: 1.
-    k: 2
-    num_experts: 8
-    token_imbalance_hypothesis: 1.0
+  share_embeddings_and_output_weights: False
 trainer:
   data_parallel_sharding_strategy: "OPTIMIZER_STATES"
   param_dtype: "float16"
