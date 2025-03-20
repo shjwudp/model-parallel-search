@@ -63,7 +63,7 @@ def The_coefficient_of_the_model_state_size_with_respect_to_the_parameter_quanti
         },
         "FULLY_SHARD": {
             ("float16", "float16"): 20.0 / d,
-            ("float16", "float32"): 16.0 / d,
+            ("float16", "float32"): 18.0 / d,
             ("float32", "float32"): 16.0 / d,
         },
     }
